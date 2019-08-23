@@ -1,5 +1,6 @@
 package com.softbankrobotics.dx.peppermyocontrol
 
+import android.Manifest.permission.*
 import android.os.Bundle
 import android.util.Log
 import com.aldebaran.qi.sdk.QiContext
@@ -11,14 +12,18 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.thalmic.myo.*
 import kotlinx.android.synthetic.main.activity_main.*
-import android.Manifest.permission.ACCESS_COARSE_LOCATION
+import android.content.Context
+import android.media.MediaPlayer
 import com.aldebaran.qi.Future
 import com.aldebaran.qi.sdk.`object`.actuation.*
 import com.aldebaran.qi.sdk.`object`.geometry.Transform
-import com.aldebaran.qi.sdk.builder.TransformBuilder
-import com.aldebaran.qi.sdk.builder.GoToBuilder
-import com.aldebaran.qi.sdk.builder.LookAtBuilder
-import com.aldebaran.qi.sdk.builder.SayBuilder
+import com.aldebaran.qi.sdk.`object`.holder.AutonomousAbilitiesType
+import com.aldebaran.qi.sdk.`object`.holder.Holder
+import com.aldebaran.qi.sdk.`object`.locale.Language
+import com.aldebaran.qi.sdk.`object`.locale.Locale
+import com.aldebaran.qi.sdk.`object`.locale.Region
+import com.aldebaran.qi.sdk.builder.*
+import com.aldebaran.qi.sdk.design.activity.conversationstatus.SpeechBarDisplayStrategy
 
 
 const val TAG="MyoControlMain"
@@ -33,22 +38,25 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
     private lateinit var goTo: GoTo
     private lateinit var lookAt: LookAt
     // Store the action execution future.
-    private var goToFuture:Future<Void>? = null
-    private var lookAtFuture:Future<Void>? = null
+    private var currentFuture:Future<Void>? = null
     private lateinit var actuation: Actuation
     private lateinit var robotFrame: Frame
     private lateinit var transform: Transform
     private lateinit var mapping: Mapping
     private lateinit var targetFrame: FreeFrame
-    private val lookLeft = com.aldebaran.qi.sdk.`object`.geometry.Vector3(-1.0,-0.5,0.0)
-    private val lookRight = com.aldebaran.qi.sdk.`object`.geometry.Vector3(-1.0,0.5,0.0)
+    private val lookLeft = com.aldebaran.qi.sdk.`object`.geometry.Vector3(-1.0,0.5,0.0)
+    private val lookRight = com.aldebaran.qi.sdk.`object`.geometry.Vector3(-1.0,-0.5,0.0)
+    private lateinit var basicAwarenessHolder:Holder
     //say variables
-    lateinit var qiContext: QiContext
-    private var sayFuture:Future<Void>? = null
+    private lateinit var qiContext: QiContext
+    private lateinit var mediaPlayer: MediaPlayer
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setSpeechBarDisplayStrategy(SpeechBarDisplayStrategy.OVERLAY)
         setContentView(R.layout.activity_main)
+        mediaPlayer = MediaPlayer()
         QiSDK.register(this, this)
         Log.i(TAG, "onCreate called")
 
@@ -58,6 +66,8 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
         //get the right bluetooth permission
                 requestPermissions(
                     arrayOf(
+                        BLUETOOTH,
+                        BLUETOOTH_ADMIN,
                         ACCESS_COARSE_LOCATION
                     ), 1
                 )
@@ -96,16 +106,6 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
             }
         }
 
-        //button to enable/disable Pepper control
-        controlButton.setOnClickListener {
-            controlEnabled=!controlEnabled
-            if(controlEnabled){
-                controlButton.setText("Control: on")
-            } else {
-                controlButton.setText("Control: off")
-            }
-        }
-
     }
 
     override fun onResume() {
@@ -128,6 +128,10 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
     override fun onRobotFocusGained(qiContext: QiContext) {
         Log.i(TAG,"onRobotFocusGained called")
         this.qiContext = qiContext
+        //create basic awareness holder to avoid robot getting distracted when activated
+        basicAwarenessHolder = HolderBuilder.with(qiContext)
+            .withAutonomousAbilities(AutonomousAbilitiesType.BASIC_AWARENESS)
+            .build()
         //motion initialisation
         // Get the Actuation service from the QiContext.
         actuation = qiContext.actuation
@@ -153,6 +157,19 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
         lookAt.setPolicy(LookAtMovementPolicy.HEAD_AND_BASE)
         // Add an on started listener on the LookAt action.
         lookAt.addOnStartedListener { Log.i(TAG, "LookAt action started.") }
+
+        //button to enable/disable Pepper control
+        controlButton.setOnClickListener {
+            controlEnabled=!controlEnabled
+            if(controlEnabled){
+                controlButton.setText("Control: on")
+                basicAwarenessHolder.async().hold()
+            } else {
+                controlButton.setText("Control: off")
+                basicAwarenessHolder.async().release()
+            }
+        }
+
 
     }
 
@@ -215,29 +232,29 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
                  * This interface in called when Myo detect some pose
                  */
                 textView.setText("Pose: " + pose!!.toString())
+                currentFuture?.requestCancellation()
 
                 if (pose == Pose.REST) {
                     Log.i(TAG,"rest")
-                    lookAtFuture?.cancel(false)
-                    goToFuture?.requestCancellation()
-                    sayFuture?.requestCancellation()
 
                 } else if (pose == Pose.DOUBLE_TAP) {
                     Log.i(TAG,"double tap")
                     controlEnabled=!controlEnabled
                     if(controlEnabled){
                         controlButton.setText("Control: on")
-                        SayBuilder.with(qiContext).withText("Control on.").buildAsync()
+                        basicAwarenessHolder.async().hold()
+                        SayBuilder.with(qiContext).withText("Control, on.")
+                            .buildAsync()
                             .andThenCompose {say ->
-                                sayFuture = say.async().run()
-                                sayFuture
+                                currentFuture = say.async().run()
+                                currentFuture
                             }
                     } else {
                         controlButton.setText("Control: off")
-                        SayBuilder.with(qiContext).withText("Control off.").buildAsync()
+                        basicAwarenessHolder.async().release()
+                        currentFuture = SayBuilder.with(qiContext).withText("Control, off.").buildAsync()
                             .andThenCompose {say ->
-                                sayFuture = say.async().run()
-                                sayFuture
+                                say.async().run()
                             }
                     }
 
@@ -253,10 +270,9 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
                                 .fromTranslation(lookRight)
                         }
                         //update target frame
-                        targetFrame.async().update(robotFrame, transform, 0L)
+                        currentFuture = targetFrame.async().update(robotFrame, transform, 0L)
                             .thenCompose{
-                                lookAtFuture = lookAt.async().run()
-                                lookAtFuture
+                                lookAt.async().run()
                             }
                             .thenConsume { future ->
                             if (future.isSuccess) {
@@ -281,10 +297,9 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
                                 .fromTranslation(lookLeft)
                         }
                         //update target frame
-                        targetFrame.async().update(robotFrame, transform, 0L)
+                        currentFuture = targetFrame.async().update(robotFrame, transform, 0L)
                             .thenCompose {
-                                lookAtFuture = lookAt.async().run()
-                                lookAtFuture
+                                lookAt.async().run()
                             }
                             .thenConsume { future ->
                             if (future.isSuccess) {
@@ -299,11 +314,16 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
 
                 } else if (pose == Pose.FIST) {
                     Log.i(TAG,"fist")
-                    SayBuilder.with(qiContext).withText("Hey!").buildAsync()
-                        .andThenCompose {say ->
-                            sayFuture = say.async().run()
-                            sayFuture
-                        }
+                    if(controlEnabled) {
+                        SayBuilder.with(qiContext)
+                            .withLocale(Locale(Language.FRENCH, Region.FRANCE))
+                            .withText("Coucou!")
+                            .buildAsync()
+                            .andThenCompose { say ->
+                                currentFuture = say.async().run()
+                                currentFuture
+                            }
+                    }
 
                 } else if (pose == Pose.FINGERS_SPREAD) {
                     //move forward 1 meter when fingers spread
@@ -313,10 +333,9 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
                         transform = TransformBuilder.create()
                             .fromXTranslation(10.0)
                         // Update the target location relatively to Pepper's current location.
-                        targetFrame.async().update(robotFrame, transform, 0L)
+                        currentFuture = targetFrame.async().update(robotFrame, transform, 0L)
                             .thenCompose {
-                                goToFuture = goTo.async().run()
-                                goToFuture
+                                goTo.async().run()
                             }
                             .thenConsume { future ->
                                 if (future.isSuccess) {
@@ -328,12 +347,7 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
                     }
                 }
             }
-/*
-// Execute the GoTo action asynchronously.
-                    val goToFuture =
-                    // Add a lambda to the action execution.
-                    goToFuture
- */
+
             override fun onArmSync(myo: Myo?, timestamp: Long, arm: Arm?, xDirection: XDirection?) {
                 /**
                  * Show in the label, the arm where myo is wearing
@@ -349,6 +363,20 @@ class MainActivity :  RobotActivity(), RobotLifecycleCallbacks {
             }
 
         }
+    }
+
+    ////////////////////////////
+    //        helpers         //
+    ////////////////////////////
+
+    private fun makeAnimate(animResource: Int) : Animate {
+        val animation = AnimationBuilder.with(qiContext)
+            .withResources(animResource)
+            .build()
+
+        return AnimateBuilder.with(qiContext)
+            .withAnimation(animation)
+            .build()
     }
 
 }

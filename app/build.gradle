@@ -41,6 +41,4 @@ dependencies {
     }
     // MYO DEPENDECY
     implementation 'com.thalmic:myosdk:0.10.+@aar'
-    // REMOTE CONTROL LIBRARY
-    implementation project(":remotecontrollibrary-0.0.2")
 }
